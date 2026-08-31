@@ -28,6 +28,18 @@ Add an entry the moment something costs you more than 15 minutes. Write it befor
 
 ## Entries
 
+### INC-014 · `policy/evaluator.py` imported the idempotency key straight from `execution/`, breaking the phase-00 import-linter contract
+
+- **When:** Day 4, phase 04
+- **Symptom:** none visible in any test — `uv run pytest` was fully green. Running `uv run lint-imports` (part of `make lint`, but not something I'd re-run mid-implementation) reported `Policy imports only domain BROKEN: recoup.policy is not allowed to import recoup.execution`.
+- **Blast radius:** none shipped — caught before the phase gate, let alone a commit. Would have been a real architectural leak if it had: `policy/` is supposed to be import-linter-enforced to depend on `domain/` only, precisely so the pure evaluator can never accidentally acquire an I/O dependency.
+- **First wrong hypothesis:** none — the linter output named the exact file and line, so there was nothing to diagnose, only to fix.
+- **Diagnosis:** `evaluate()` needs the idempotency key formula (FR-7.6) to implement "one idempotency key -> at most one executed action" as a policy-level invariant, and the only place that formula existed was `execution/idempotency.py` — reasonable to reach for by name, wrong by architecture.
+- **Root cause:** the idempotency-key formula is pure and dependency-free, so it belongs in `domain/` regardless of which layer happens to have written it first; `execution/idempotency.py` had accreted both the pure formula and the I/O-dependent `RedisIdempotencyGuard` together.
+- **Fix:** moved `idempotency_key()` into a new `domain/idempotency.py`; `execution/idempotency.py` now re-exports it via `__all__` and keeps only the Redis-backed guard. Updated `policy/evaluator.py` and the property tests to import from `domain` directly. Re-ran `ruff`/`mypy`/`lint-imports` clean afterward.
+- **Prevention:** none new needed — the contract that caught this (`pyproject.toml`'s `[tool.importlinter]`, written in phase 00) is the prevention; this is exactly the failure mode it exists to catch, and it worked on the first real attempt to violate it. Worth noting for the reflection prompts: this bug was invisible to every test in the suite and would have shipped silently without the architecture-level check.
+- **Time lost:** 0.3h
+
 ### INC-013 · Uplift/propensity AUC was stuck at random because nothing in the generator connected archetype to any feature
 
 - **When:** Day 3, phase 03
@@ -215,8 +227,9 @@ Add an entry the moment something costs you more than 15 minutes. Write it befor
 | 011 | 03 | Multiclass Brier formula didn't reduce to the binary one at K=2 | 0.5h | divide by K; docstring states the reduction argument so it can be checked, not trusted |
 | 012 | 03 | A pickled calibrator class would have failed to import at inference time | 0.4h | moved the class into the installed package; an integration test now loads the real artifact |
 | 013 | 03 | Uplift/propensity AUC stuck at random — the label had no relationship to any feature | 1.5h | archetype selection now genuinely depends on source_type/amount/decline_reason |
+| 014 | 04 | `policy/evaluator.py` imported the idempotency key from `execution/`, breaking the phase-00 import-linter contract | 0.3h | moved the pure formula to `domain/idempotency.py`; the contract itself was the prevention and caught this on the first real attempt to violate it |
 
-**Total time lost to incidents:** 6.0h
+**Total time lost to incidents:** 6.3h
 **Most valuable lesson:** the two costliest bugs (INC-010, INC-013) each looked like a modeling or tuning problem at first glance and were actually a data-plumbing bug — checking `model.classes_` and computing an oracle AUC (using the generator's own true probability as the score) settled both in minutes once the right question was asked, versus much longer spent tuning hyperparameters that were never the problem.
 **The bug that would have shipped if it hadn't been caught:** INC-009 — an uncalibrated propensity number reaching `case.scored`, which the EV engine (Phase 05) would have consumed as if it were a real probability. Nothing would have crashed; the number would just have been quietly wrong, exactly the failure mode CLAUDE.md's calibration rule exists to prevent.
 
