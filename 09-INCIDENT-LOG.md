@@ -28,6 +28,66 @@ Add an entry the moment something costs you more than 15 minutes. Write it befor
 
 ## Entries
 
+### INC-013 · Uplift/propensity AUC was stuck at random because nothing in the generator connected archetype to any feature
+
+- **When:** Day 3, phase 03
+- **Symptom:** the propensity models scored AUC-ROC ≈ 0.51 (coin-flip) no matter how much the LightGBM hyperparameters were tuned.
+- **Blast radius:** propensity and uplift training only; the classifier (a different part of the generator) was unaffected and already passing.
+- **First wrong hypothesis:** assumed it was a hyperparameter or feature-encoding problem and spent time tuning `num_leaves`/`n_estimators` before questioning the data itself.
+- **Diagnosis:** computed the *oracle* AUC — using the generator's own true `p_self_heal` as the prediction score directly, bypassing the model entirely. That also came back near 0.5-0.6, which meant no model could ever do better: the uplift archetype (`persuadable`/`sure_thing`/`lost_cause`/`sleeping_dog`, which sets `p_self_heal`) was drawn by `weighted_choice(rng, UPLIFT_ARCHETYPES)` with fixed weights, completely independent of `source_type`, amount, or decline reason.
+- **Root cause:** a feature-generation gap, not a modeling one — the synthetic label had no relationship to anything a model could observe.
+- **Fix:** `archetype_weights_for()` in `data/distributions.py` now shifts archetype probability based on `source_type`, decline reason, and relative amount (documented multipliers, tuned empirically against measured AUC until both propensity arms cleared 0.70 with a comfortable margin — this is calibrating the *synthetic world's* realism, not the evaluation metric).
+- **Prevention:** `ml/train_propensity.py`'s AUC gate itself is the regression test; a future change that decouples features from outcomes again fails the same way immediately.
+- **Time lost:** 1.5h
+
+### INC-012 · A custom calibrator class pickled under a training-only module path would have failed to load at inference time
+
+- **When:** Day 3, phase 03
+- **Symptom:** none yet observed in a real run — caught by inspection before it could bite, while reasoning through how `understanding/classify.py` would load `ml/artifacts/classifier/calibrator.joblib`.
+- **Blast radius:** would have been every runtime scoring call, the first time it ran outside a session that happened to have `ml/` on `sys.path`.
+- **First wrong hypothesis:** none; this one was caught by thinking through the deployment path rather than by a failing test.
+- **Diagnosis:** `joblib.dump` records a pickled object's class under its exact import path at dump time. `MulticlassCalibrator` was defined in a bare top-level `ml/calibration.py` script — importable as `calibration` only because `ml/train_classifier.py` manually inserts `ml/` onto `sys.path` before importing it. `src/recoup/understanding/` (the installed package, where scoring actually runs) has no reason to ever put `ml/` on its path.
+- **Root cause:** defining a class that gets pickled in a location that isn't part of the installed package.
+- **Fix:** moved `MulticlassCalibrator`, `binary_calibrator`, and `multiclass_brier_score` into `src/recoup/understanding/calibration.py` (part of the installed `recoup` package); `ml/train_classifier.py` and `ml/train_propensity.py` import from there instead of defining their own copy. Verified by unpickling both artifacts in a fresh process before trusting the fix.
+- **Prevention:** `tests/integration/test_scoring.py` exercises the full load-and-score path against the real saved artifacts, so this class of bug would now fail a real test, not just a manual check.
+- **Time lost:** 0.4h (caught before it shipped, so mostly the refactor itself)
+
+### INC-011 · The multiclass Brier score formula didn't reduce to the binary one at K=2
+
+- **When:** Day 3, phase 03
+- **Symptom:** after fixing INC-010 (below), macro-F1 looked right (~0.75) but the Brier score came back at 0.33 — nearly 3x the "<= 0.12" gate — despite the model's predicted confidence looking reasonably well-calibrated by eye.
+- **Blast radius:** the classifier's reported Brier score only; the classifier's actual predictions were fine.
+- **First wrong hypothesis:** suspected the isotonic calibration itself was poorly fit (too little validation data for 9 one-vs-rest fits) and almost started tuning the calibration split sizes.
+- **Diagnosis:** worked out what a K=2 case reduces to under the "sum the squared error across every class" formula (Brier's original 1950 multi-category definition) versus what `sklearn.metrics.brier_score_loss` reports for binary classification. The sum-over-classes version is exactly 2x the familiar binary number at K=2, because it counts both the positive- and negative-class terms instead of one.
+- **Root cause:** implemented the textbook multi-category formula verbatim without checking it against the single-number convention the "<= 0.12" threshold was actually calibrated against.
+- **Fix:** divide by K (the number of classes) in `multiclass_brier_score`. This is the generalization that agrees with the standard binary Brier score exactly at K=2 — not a threshold adjustment; the formula bug was found and reasoned through *before* comparing against the gate, not by working backward from a number that needed to pass.
+- **Prevention:** the function's docstring now states the reduction-at-K=2 argument explicitly, so the choice can be checked by a reader instead of taken on faith.
+- **Time lost:** 0.5h
+
+### INC-010 · LightGBM sorts class labels alphabetically, silently misaligning every downstream array
+
+- **When:** Day 3, phase 03
+- **Symptom:** the classifier's macro-F1 came back at 0.137 — worse than random guessing (1/9 ≈ 0.11) — immediately after wiring up calibration, on a model that a quick standalone check showed had ~0.76 raw accuracy.
+- **Blast radius:** calibration, the confusion matrix, and every reported metric; the trained model itself was fine the whole time.
+- **First wrong hypothesis:** suspected the isotonic calibration step itself was broken (over-fit to 900-ish per-class validation examples).
+- **Diagnosis:** printed `model.classes_` after fitting and compared it against the module's own `CLASS_LABELS` constant (declared in `ROOT_CAUSE_TAXONOMY`'s order). They didn't match — `model.classes_` was alphabetically sorted; `CLASS_LABELS` followed the taxonomy's declared order. `predict_proba()`'s columns follow `model.classes_`, so every place that indexed a probability column by position against `CLASS_LABELS` was silently reading the wrong class's probability.
+- **Root cause:** assumed a fixed, declared class order would be preserved through `.fit()`; LightGBM/sklearn re-sorts it.
+- **Fix:** capture `class_labels = list(model.classes_)` immediately after fitting and use *that* — never the taxonomy's declaration order — for calibration, argmax, the confusion matrix, and everything saved to `metrics.json`.
+- **Prevention:** none automated beyond the fix itself; a comment at the capture site names the exact failure mode for the next reader.
+- **Time lost:** 0.6h
+
+### INC-009 · A model output bypassed calibration — caught in review, not by a test
+
+- **When:** Day 3, phase 03
+- **Symptom:** none observed; found by re-reading `understanding/uplift.py` against CLAUDE.md's own guardrail list ("no model output bypasses calibration") before considering the phase done.
+- **Blast radius:** would have been `case.scored`'s `p_recover_baseline` field for every case, had it shipped — the one propensity number in this phase's runtime path that wasn't going through an isotonic calibrator.
+- **First wrong hypothesis:** none — `ml/train_uplift.py` never calibrated `mu0`/`mu1` in the first place because the X-learner's internal residual computation (`D0`, `D1`) has no need for calibrated inputs, and that scope boundary quietly extended to the number that *is* exposed downstream.
+- **Diagnosis:** re-reading the module docstrings against the ground rules table, not a failing test — this bug had no test because no test had been written to check it.
+- **Root cause:** conflating "what the X-learner's math needs" (raw scores are fine) with "what a runtime caller receives" (must be calibrated) as the same scope.
+- **Fix:** `ml/train_uplift.py` now fits `mu0_calibrator` (isotonic, on a held-out control-arm validation split) and saves it alongside `mu0`; `understanding/uplift.py` applies it before returning `baseline_propensity`. `tau0`/`tau1` remain uncalibrated deliberately — they're continuous treatment-effect regressions, not probabilities, so there is nothing to calibrate.
+- **Prevention:** none automated — this is exactly the kind of thing that needs a standing rule (CLAUDE.md already has one) and a re-read before declaring a phase done, not a test that can be written for every possible instance of the pattern.
+- **Time lost:** 0.3h
+
 ### INC-008 · Two tests used fixed literal seeds against a persistent shared database
 
 - **When:** Day 2, phase 02
@@ -150,10 +210,15 @@ Add an entry the moment something costs you more than 15 minutes. Write it befor
 | 006 | 02 | `TestClient` + asyncpg is broken on Windows (cross-thread event loop handoff) | 0.6h | webhook tests use `httpx.AsyncClient` + `ASGITransport` on the test's own loop instead |
 | 007 | 02 | Real race: dedupe reservation could outrun the case.created it pointed to | 0.3h | losers wait for the case to exist before logging the suppression; covered by a chaos test |
 | 008 | 02 | Two tests hardcoded a seed against a persistent shared dev database | 0.2h | seeds drawn from OS entropy at test-run time, not literals |
+| 009 | 03 | A model output (`p_recover_baseline`) bypassed calibration | 0.3h | `mu0_calibrator` fit and applied; caught by re-reading CLAUDE.md's own rules before calling the phase done |
+| 010 | 03 | LightGBM sorts class labels alphabetically; every downstream array was silently misaligned | 0.6h | capture `model.classes_` right after `.fit()`, use only that order everywhere after |
+| 011 | 03 | Multiclass Brier formula didn't reduce to the binary one at K=2 | 0.5h | divide by K; docstring states the reduction argument so it can be checked, not trusted |
+| 012 | 03 | A pickled calibrator class would have failed to import at inference time | 0.4h | moved the class into the installed package; an integration test now loads the real artifact |
+| 013 | 03 | Uplift/propensity AUC stuck at random — the label had no relationship to any feature | 1.5h | archetype selection now genuinely depends on source_type/amount/decline_reason |
 
-**Total time lost to incidents:** 2.5h
-**Most valuable lesson:** _
-**The bug that would have shipped if it hadn't been caught:** _
+**Total time lost to incidents:** 6.0h
+**Most valuable lesson:** the two costliest bugs (INC-010, INC-013) each looked like a modeling or tuning problem at first glance and were actually a data-plumbing bug — checking `model.classes_` and computing an oracle AUC (using the generator's own true probability as the score) settled both in minutes once the right question was asked, versus much longer spent tuning hyperparameters that were never the problem.
+**The bug that would have shipped if it hadn't been caught:** INC-009 — an uncalibrated propensity number reaching `case.scored`, which the EV engine (Phase 05) would have consumed as if it were a real probability. Nothing would have crashed; the number would just have been quietly wrong, exactly the failure mode CLAUDE.md's calibration rule exists to prevent.
 
 ---
 
