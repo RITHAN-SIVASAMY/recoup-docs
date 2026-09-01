@@ -28,6 +28,18 @@ Add an entry the moment something costs you more than 15 minutes. Write it befor
 
 ## Entries
 
+### INC-020 · `make demo` took 10+ minutes for 500 cases — a fresh `shap.TreeExplainer` rebuilt on every single classification
+
+- **When:** Day 7, phase 10
+- **Symptom:** a real, non-error, end-to-end run of `run_batch(seed=42, n_cases=500)` — ingest through the headline report, audit chain VERIFIED, replay equality PASS, nothing wrong with the *output* — took `10m25s` wall clock. For a command meant to be run live in front of judges, that's not usable.
+- **Blast radius:** none shipped wrong — this was caught while timing the very first successful end-to-end run, before committing. But it would have directly undermined the demo hook (§9's headline block, printed live) if it had reached the pitch video unfixed.
+- **First wrong hypothesis:** assumed it was Postgres/Redis round-trip volume — a synchronous per-case pipeline (ingest → cohort → score → ladder walk, each with several DB/Redis calls) with no concurrency seemed like the obvious explanation, so the first fix was wrapping every per-case phase in a bounded `asyncio.gather`. It made no measurable difference (a second full run was still ~10m9s) — the real signal was hiding in plain sight: `time`'s own `user`/`sys` output was under 1.3s combined for a 10-minute `real` run, which is *not* what "many small round trips" looks like, and a direct measurement of raw round-trip latency (100 sequential `SELECT 1`s) came back at 0.41ms average — nowhere near slow enough to explain the total.
+- **Diagnosis:** stopped guessing and timed each phase directly on a 50-case slice: ingest took 0.46s, `score_case` alone took 63.2s (1.26s/case). That isolated it to `understanding/classify.py` and `understanding/uplift.py`.
+- **Root cause:** `classify()` built a fresh `shap.TreeExplainer(model)` — which parses the entire tree ensemble — on *every single call*, then used it exactly once and discarded it, despite the model itself (`classifier_model()`) already being `@lru_cache`d and provably identical across calls. `classify()` and `score_uplift()` also each re-read a small `metrics.json` off disk per call for `model_version`, uncached, unlike every other artifact in `understanding/artifacts.py`.
+- **Fix:** `@lru_cache`d a new `_classifier_explainer()` helper (builds the `TreeExplainer` once, off the already-cached model) and added `@lru_cache` to all three uncached `_model_version()`-style functions (`classify.py`, `uplift.py`, `propensity.py`) — the same memoization pattern `artifacts.py` already used for the model files themselves, just not consistently applied to everything built *from* them. `score_case` on the same 50-case slice dropped from 63.2s to 5.6s (11x); the full 500-case `run_batch` dropped from `10m25s` to `55.7s`.
+- **Prevention:** `tests/unit/test_understanding_caching.py` asserts all four helpers are memoized (same object / cache-hit count increases on a second call) — a future uncached rebuild fails a fast unit test instead of only showing up as an unexplained slow demo.
+- **Time lost:** 1.1h
+
 ### INC-019 · A calm opt-out request ("stop calling me") was classified as hostility and forced a safe-exit instead of a clean opt-out
 
 - **When:** Day 6, phase 08
@@ -293,8 +305,9 @@ Add an entry the moment something costs you more than 15 minutes. Write it befor
 | 017 | 06 | `dispatch()`'s approval branch wrote a candidate's EV-in-rupees into the `uplift` field, overflowing a `Numeric(6,4)` column | 0.2h | added the missing explicit `uplift` parameter to `dispatch()`; caught by the deliberately-high-value integration test before any commit |
 | 018 | 07 | `fold()` never projected `root_cause`/`resolution_state` past `case.created`, so recovery pages would have silently shown the generic fallback | 0.3h | added the three missing `fold()` branches (case.classified, case.abandoned_uneconomic, payment.recovered); reset the dev DB for a clean replay slate, same as INC-003 |
 | 019 | 08 | A calm opt-out phrase ("stop calling me") matched the hostility guard, forcing a safe-exit instead of a clean opt-out; `opt_out`/`human_transfer` also had no scripted advance to `close` | 0.3h | removed the false-positive keyword; added the missing `_SCRIPTED_ADVANCE` entries; both caught by the same integration test |
+| 020 | 10 | `make demo` took 10m25s for 500 cases — `classify()` rebuilt a `shap.TreeExplainer` (parses the whole tree ensemble) on every call instead of once | 1.1h | `@lru_cache`d the explainer and three uncached `metrics.json` reads, matching `artifacts.py`'s own pattern; 500-case runtime dropped to 55.7s (11x) |
 
-**Total time lost to incidents:** 7.45h
+**Total time lost to incidents:** 8.55h
 **Most valuable lesson:** the two costliest bugs (INC-010, INC-013) each looked like a modeling or tuning problem at first glance and were actually a data-plumbing bug — checking `model.classes_` and computing an oracle AUC (using the generator's own true probability as the score) settled both in minutes once the right question was asked, versus much longer spent tuning hyperparameters that were never the problem.
 **The bug that would have shipped if it hadn't been caught:** INC-009 — an uncalibrated propensity number reaching `case.scored`, which the EV engine (Phase 05) would have consumed as if it were a real probability. Nothing would have crashed; the number would just have been quietly wrong, exactly the failure mode CLAUDE.md's calibration rule exists to prevent.
 
