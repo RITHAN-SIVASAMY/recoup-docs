@@ -28,6 +28,30 @@ Add an entry the moment something costs you more than 15 minutes. Write it befor
 
 ## Entries
 
+### INC-015 · Docker Desktop was fully stopped at the start of the phase-05 session, not just port-remapped
+
+- **When:** Day 4, phase 05
+- **Symptom:** a routine "run the tests" pass came back with 27 integration-test failures, all in `tests/integration/`, with unit/property tests unaffected (73 passed).
+- **Blast radius:** none real — every failure was a connection failure to Postgres, not a code defect. No commit had happened yet.
+- **First wrong hypothesis:** briefly suspected the new Phase 04 code had regressed something, before noticing every single failure was in `integration/` and none in `unit/` or `property/` — the tell that this is infrastructure, not logic.
+- **Diagnosis:** `docker ps` failed outright with "failed to connect to the docker API" — not a port conflict this time (INC-001), the whole Docker Desktop application (and `com.docker.service`) was stopped.
+- **Root cause:** the dev machine's Docker Desktop had not been started this session; unlike INC-001 (containers up, wrong ports), here nothing was running at all.
+- **Fix:** launched Docker Desktop via `Start-Process` in PowerShell (a plain `&`-backgrounded launch from the Bash tool did not actually keep the GUI process alive — a Windows subprocess-detachment quirk worth remembering), polled `docker info` until the daemon answered (~a few minutes cold start), then `docker compose up -d postgres redis` and `alembic upgrade head` for the two new Phase 05 tables. Re-ran the full suite clean afterward.
+- **Prevention:** none automated — starting Docker Desktop isn't something CI needs (GitHub Actions' `postgres`/`redis` services start fresh every run); noted here so a future local session recognizes "every integration test failed, unit tests didn't" as an infra signature immediately rather than re-diagnosing.
+- **Time lost:** 0.2h
+
+### INC-016 · A new API integration test hit the same cross-event-loop asyncpg failure INC-006 already named, because two dependencies were left un-overridden
+
+- **When:** Day 4, phase 05
+- **Symptom:** `tests/integration/test_approvals_api.py`'s kill-switch test crashed with `AttributeError: 'NoneType' object has no attribute 'send'` deep in `asyncio.proactor_events`, but only when run after another test in the same file, never alone.
+- **Blast radius:** test-only; no production code was wrong.
+- **First wrong hypothesis:** none needed — `test_webhook.py`'s own module docstring already names this exact failure mode (Windows `ProactorEventLoop` + asyncpg across a event-loop boundary) and the fix (override every DB-touching FastAPI dependency to use the test's own `engine` fixture instead of `api.deps`'s process-`lru_cache`d one).
+- **Diagnosis:** the new test overrode `get_session` and `get_event_store` (matching `test_webhook.py`) but not `get_staging_store`/`get_approval_store`, which the approvals/killswitch routes also depend on -- those fell through to the process-cached engine, which had been bound to a *different* test's event loop earlier in the same pytest run.
+- **Root cause:** `api/deps.py`'s `@lru_cache`-based `get_engine()` is correct for production (one process, one loop) but any dependency built from it needs an override in a test that spins up a fresh event loop per test function -- I added two new such dependencies (`get_staging_store`, `get_approval_store`) in this phase without extending the override list to match.
+- **Fix:** added `_override_get_staging_store`/`_override_get_approval_store` to the test's `async_client` fixture, matching the pattern already established for `get_session`/`get_event_store`.
+- **Prevention:** none new -- this is the same class INC-006 already documented and prevents by convention; noted here mainly as a reminder that *every* new `get_engine()`-derived FastAPI dependency needs to join that override list, not just the ones a given test happens to exercise first.
+- **Time lost:** 0.15h
+
 ### INC-014 · `policy/evaluator.py` imported the idempotency key straight from `execution/`, breaking the phase-00 import-linter contract
 
 - **When:** Day 4, phase 04
@@ -228,8 +252,10 @@ Add an entry the moment something costs you more than 15 minutes. Write it befor
 | 012 | 03 | A pickled calibrator class would have failed to import at inference time | 0.4h | moved the class into the installed package; an integration test now loads the real artifact |
 | 013 | 03 | Uplift/propensity AUC stuck at random — the label had no relationship to any feature | 1.5h | archetype selection now genuinely depends on source_type/amount/decline_reason |
 | 014 | 04 | `policy/evaluator.py` imported the idempotency key from `execution/`, breaking the phase-00 import-linter contract | 0.3h | moved the pure formula to `domain/idempotency.py`; the contract itself was the prevention and caught this on the first real attempt to violate it |
+| 015 | 05 | Docker Desktop was fully stopped at session start; 27 integration tests failed on connection, not logic | 0.2h | none needed — recognized immediately as an infra signature (integration-only failures, unit/property clean) |
+| 016 | 05 | A new API test hit INC-006's cross-event-loop asyncpg bug because two new FastAPI dependencies weren't added to the test's override list | 0.15h | same prevention as INC-006; noted as a reminder to extend the override list with every new `get_engine()`-derived dependency |
 
-**Total time lost to incidents:** 6.3h
+**Total time lost to incidents:** 6.65h
 **Most valuable lesson:** the two costliest bugs (INC-010, INC-013) each looked like a modeling or tuning problem at first glance and were actually a data-plumbing bug — checking `model.classes_` and computing an oracle AUC (using the generator's own true probability as the score) settled both in minutes once the right question was asked, versus much longer spent tuning hyperparameters that were never the problem.
 **The bug that would have shipped if it hadn't been caught:** INC-009 — an uncalibrated propensity number reaching `case.scored`, which the EV engine (Phase 05) would have consumed as if it were a real probability. Nothing would have crashed; the number would just have been quietly wrong, exactly the failure mode CLAUDE.md's calibration rule exists to prevent.
 
