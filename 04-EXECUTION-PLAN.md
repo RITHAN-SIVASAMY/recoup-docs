@@ -116,7 +116,7 @@ Chosen for three properties: **demonstrably serious**, **fast to build solo**, a
 
 | Concern | Choice | Why |
 |---|---|---|
-| Framework | **Next.js 15** (App Router) + **TypeScript** | One app serves both the merchant dashboard and the public recovery microsite; deploys free on Vercel |
+| Framework | **Next.js 16** (App Router) + **TypeScript** | One app serves both the merchant dashboard and the public recovery microsite; deploys free on Vercel. Built against 15 in Phase 07, upgraded to 16 immediately after to close a high-severity transitive `postcss` vulnerability (`npm audit`) — no App Router code changes were needed |
 | UI kit | **Tailwind CSS** + **shadcn/ui** + **lucide** icons | Looks like a real product in hours, not days |
 | Charts | **Recharts** (+ a hand-built Qini/calibration chart) | Enough for lift, funnel, calibration and Qini without fighting a viz library |
 | Data | **TanStack Query** + **EventSource (SSE)** | Live case stream during the demo is a genuine "this is running" moment |
