@@ -28,6 +28,18 @@ Add an entry the moment something costs you more than 15 minutes. Write it befor
 
 ## Entries
 
+### INC-018 · `fold()` never projected `root_cause` into `Case`, so every recovery page would have shown the generic fallback
+
+- **When:** Day 5, phase 07
+- **Symptom:** `tests/integration/test_recovery_flow.py::test_resolving_a_valid_link_returns_the_cause_specific_fix` expected `ctx.fix.kind == "update_card"` for a case classified `card_expired_or_invalid`, and got the generic `contact_support` fallback instead.
+- **Blast radius:** would have been severe if it had shipped — FR-12.2's entire point is cause-specific content, and `execution/recovery.fix_for()` reads `case.root_cause`; if that field is always `None`, every real recovery page (every case gets classified via `case.classified`, never via `case.created`) silently degrades to the generic message. Caught before any commit.
+- **First wrong hypothesis:** none — this was a known, already-identified gap from phase 03 (self-caught then, flagged as a background task afterward rather than fixed, since nothing depended on it yet). Phase 07 is the first phase where something actually breaks without it.
+- **Diagnosis:** `audit/projection.py`'s `fold()` has, since phase 01, only ever had a branch for `event_type == "case.created"` — every other event type just advanced `updated_at`/`seq`/`tip_hash` and left every other field untouched, including `root_cause` (set by `case.classified`, phase 03) and `resolution_state` (which `case.abandoned_uneconomic`, phase 05, and now `payment.recovered` should also update).
+- **Root cause:** the `cases` table projection was never extended past its phase-00 skeleton as later phases added event types that logically should update it; nothing forced this to be noticed because no test compared the *projected* `Case.root_cause` against reality until this phase's recovery-content test did.
+- **Fix:** added three branches to `fold()`: `case.classified` sets `root_cause`, `case.abandoned_uneconomic` sets `resolution_state="abandoned_uneconomic"`, `payment.recovered` sets `resolution_state="recovered"`. Same function backs both `EventStore.append` (incremental) and `rebuild_all()` (replay), so both paths picked up the fix identically — no drift risk.
+- **Prevention:** replaying the fix against the shared dev database immediately failed `verify_replay_equality` (same mechanism as INC-003 — old `cases` rows, written by the pre-fix `fold()`, no longer matched a fresh replay of their own history). Reset the dev Postgres volume for a clean slate (pre-launch, no real data — the same accepted pattern INC-003 established), which is itself worth remembering as the standard response to changing `fold()`'s behavior.
+- **Time lost:** 0.3h
+
 ### INC-017 · `dispatcher.dispatch()` passed a candidate's EV-in-rupees into `request_approval()`'s `uplift` field
 
 - **When:** Day 5, phase 06
@@ -267,8 +279,9 @@ Add an entry the moment something costs you more than 15 minutes. Write it befor
 | 015 | 05 | Docker Desktop was fully stopped at session start; 27 integration tests failed on connection, not logic | 0.2h | none needed — recognized immediately as an infra signature (integration-only failures, unit/property clean) |
 | 016 | 05 | A new API test hit INC-006's cross-event-loop asyncpg bug because two new FastAPI dependencies weren't added to the test's override list | 0.15h | same prevention as INC-006; noted as a reminder to extend the override list with every new `get_engine()`-derived dependency |
 | 017 | 06 | `dispatch()`'s approval branch wrote a candidate's EV-in-rupees into the `uplift` field, overflowing a `Numeric(6,4)` column | 0.2h | added the missing explicit `uplift` parameter to `dispatch()`; caught by the deliberately-high-value integration test before any commit |
+| 018 | 07 | `fold()` never projected `root_cause`/`resolution_state` past `case.created`, so recovery pages would have silently shown the generic fallback | 0.3h | added the three missing `fold()` branches (case.classified, case.abandoned_uneconomic, payment.recovered); reset the dev DB for a clean replay slate, same as INC-003 |
 
-**Total time lost to incidents:** 6.85h
+**Total time lost to incidents:** 7.15h
 **Most valuable lesson:** the two costliest bugs (INC-010, INC-013) each looked like a modeling or tuning problem at first glance and were actually a data-plumbing bug — checking `model.classes_` and computing an oracle AUC (using the generator's own true probability as the score) settled both in minutes once the right question was asked, versus much longer spent tuning hyperparameters that were never the problem.
 **The bug that would have shipped if it hadn't been caught:** INC-009 — an uncalibrated propensity number reaching `case.scored`, which the EV engine (Phase 05) would have consumed as if it were a real probability. Nothing would have crashed; the number would just have been quietly wrong, exactly the failure mode CLAUDE.md's calibration rule exists to prevent.
 
