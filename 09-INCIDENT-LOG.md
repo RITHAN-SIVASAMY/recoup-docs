@@ -28,6 +28,18 @@ Add an entry the moment something costs you more than 15 minutes. Write it befor
 
 ## Entries
 
+### INC-017 · `dispatcher.dispatch()` passed a candidate's EV-in-rupees into `request_approval()`'s `uplift` field
+
+- **When:** Day 5, phase 06
+- **Symptom:** `tests/integration/test_dispatcher_pipeline.py::test_a_high_value_case_requires_approval_instead_of_staging` failed with `asyncpg.exceptions.NumericValueOutOfRangeError: numeric field overflow` writing to `pending_approvals`.
+- **Blast radius:** none shipped — caught by the test written for this exact scenario, before any commit.
+- **First wrong hypothesis:** briefly suspected the `Numeric(6, 4)` column was simply undersized and reached for widening it before reading the actual value in the error's parameter list.
+- **Diagnosis:** the logged INSERT parameters showed `uplift = Decimal('42499.300000')` — that number is the candidate's *expected value in rupees* (uplift × amount × margin − costs), not the uplift probability-delta (a value that should sit in roughly [-1, 1]). `dispatch()`'s `REQUIRE_APPROVAL` branch had been written as `request_approval(..., uplift=candidate.ev_inr, ...)` — the wrong field, reusing `PricedCandidate.ev_inr` where the real `uplift: Decimal` (the same one fed into `economics.ev.price_ladder_step`) was needed instead.
+- **Root cause:** `PricedCandidate` doesn't retain the original uplift value (only its downstream EV), and `dispatch()` didn't have its own `uplift` parameter yet — the nearest same-shaped `Decimal` on hand (`ev_inr`) got used by mistake.
+- **Fix:** added an explicit `uplift: Decimal` parameter to `dispatch()` (the same value the caller already passes to `price_ladder_step`) and used it at the one call site that needed it; `candidate.ev_inr` stays exactly where it belongs, in `PendingApproval.action.expected_value_inr`.
+- **Prevention:** the integration test that caught this (a real ₹5,00,000 case, deliberately chosen to exceed the approval threshold) stays in the suite; keeping the `Numeric(6, 4)` column tightly scoped to what a real uplift value should be is itself a passive guard against this exact class of mix-up recurring silently.
+- **Time lost:** 0.2h
+
 ### INC-015 · Docker Desktop was fully stopped at the start of the phase-05 session, not just port-remapped
 
 - **When:** Day 4, phase 05
@@ -254,8 +266,9 @@ Add an entry the moment something costs you more than 15 minutes. Write it befor
 | 014 | 04 | `policy/evaluator.py` imported the idempotency key from `execution/`, breaking the phase-00 import-linter contract | 0.3h | moved the pure formula to `domain/idempotency.py`; the contract itself was the prevention and caught this on the first real attempt to violate it |
 | 015 | 05 | Docker Desktop was fully stopped at session start; 27 integration tests failed on connection, not logic | 0.2h | none needed — recognized immediately as an infra signature (integration-only failures, unit/property clean) |
 | 016 | 05 | A new API test hit INC-006's cross-event-loop asyncpg bug because two new FastAPI dependencies weren't added to the test's override list | 0.15h | same prevention as INC-006; noted as a reminder to extend the override list with every new `get_engine()`-derived dependency |
+| 017 | 06 | `dispatch()`'s approval branch wrote a candidate's EV-in-rupees into the `uplift` field, overflowing a `Numeric(6,4)` column | 0.2h | added the missing explicit `uplift` parameter to `dispatch()`; caught by the deliberately-high-value integration test before any commit |
 
-**Total time lost to incidents:** 6.65h
+**Total time lost to incidents:** 6.85h
 **Most valuable lesson:** the two costliest bugs (INC-010, INC-013) each looked like a modeling or tuning problem at first glance and were actually a data-plumbing bug — checking `model.classes_` and computing an oracle AUC (using the generator's own true probability as the score) settled both in minutes once the right question was asked, versus much longer spent tuning hyperparameters that were never the problem.
 **The bug that would have shipped if it hadn't been caught:** INC-009 — an uncalibrated propensity number reaching `case.scored`, which the EV engine (Phase 05) would have consumed as if it were a real probability. Nothing would have crashed; the number would just have been quietly wrong, exactly the failure mode CLAUDE.md's calibration rule exists to prevent.
 
