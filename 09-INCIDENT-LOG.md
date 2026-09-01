@@ -28,6 +28,18 @@ Add an entry the moment something costs you more than 15 minutes. Write it befor
 
 ## Entries
 
+### INC-019 · A calm opt-out request ("stop calling me") was classified as hostility and forced a safe-exit instead of a clean opt-out
+
+- **When:** Day 6, phase 08
+- **Symptom:** `tests/integration/test_voice_runtime.py::test_opting_out_mid_call_ends_the_call_with_no_ptp` ended at `safe_exit` instead of `close`, with the guard-triggered turn showing `reason="hostility"` on a perfectly polite line: "please stop calling me."
+- **Blast radius:** would have been real if shipped — CON-03/FR-10.3 both require opt-out to be honoured cleanly within the call; every customer who opted out using natural, calm phrasing containing "stop calling me" would instead have heard the safe-exit apology script, not the opt-out confirmation, and the call would have ended with `case.exception`-free but semantically wrong logging. Caught before commit.
+- **First wrong hypothesis:** assumed the bug was in `voice/graph.py`'s routing logic (the opt-out node's own transition), since that's what the test's final assertion was checking.
+- **Diagnosis:** traced the actual turn-by-turn transitions with a small script (`classify_intent`/`next_node`/`check_guards` called directly per utterance) rather than guessing from the failing assertion — this immediately showed `check_guards` returning `GuardTrigger(reason='hostility', detail='stop calling me')` for turn 4, meaning the call never reached the opt-out routing logic at all: `advance_call` checks guards *before* intent classification, by design (guards must win), so a false-positive guard match short-circuits everything downstream.
+- **Root cause:** `voice/guards.py`'s hostility pattern list literally contained the substring `"stop calling me"` — almost certainly written with an angry/shouted version of the phrase in mind, but as a plain substring match it also matches the calm, polite version, which is exactly the phrase a customer exercising their FR-10.3 opt-out right would naturally say.
+- **Fix:** removed `"stop calling me"` from `_HOSTILITY_PATTERNS`; a real opt-out is `voice/intent.py`'s job (`wants_opt_out`), never the hostility guard's. While tracing this, also found and fixed a second, related bug: `opt_out` and `human_transfer` were missing from `_SCRIPTED_ADVANCE`, so a customer who reached either node without a guard firing would fall through to `safe_exit` instead of `close` on their next turn — same class of "the happy path silently degrades to the safety path" bug, caught by the same test.
+- **Prevention:** added `tests/unit/test_voice_guards.py::test_a_polite_opt_out_request_never_triggers_the_hostility_guard` as a direct regression test, plus the integration test that caught it in the first place stays in the suite.
+- **Time lost:** 0.3h
+
 ### INC-018 · `fold()` never projected `root_cause` into `Case`, so every recovery page would have shown the generic fallback
 
 - **When:** Day 5, phase 07
@@ -280,8 +292,9 @@ Add an entry the moment something costs you more than 15 minutes. Write it befor
 | 016 | 05 | A new API test hit INC-006's cross-event-loop asyncpg bug because two new FastAPI dependencies weren't added to the test's override list | 0.15h | same prevention as INC-006; noted as a reminder to extend the override list with every new `get_engine()`-derived dependency |
 | 017 | 06 | `dispatch()`'s approval branch wrote a candidate's EV-in-rupees into the `uplift` field, overflowing a `Numeric(6,4)` column | 0.2h | added the missing explicit `uplift` parameter to `dispatch()`; caught by the deliberately-high-value integration test before any commit |
 | 018 | 07 | `fold()` never projected `root_cause`/`resolution_state` past `case.created`, so recovery pages would have silently shown the generic fallback | 0.3h | added the three missing `fold()` branches (case.classified, case.abandoned_uneconomic, payment.recovered); reset the dev DB for a clean replay slate, same as INC-003 |
+| 019 | 08 | A calm opt-out phrase ("stop calling me") matched the hostility guard, forcing a safe-exit instead of a clean opt-out; `opt_out`/`human_transfer` also had no scripted advance to `close` | 0.3h | removed the false-positive keyword; added the missing `_SCRIPTED_ADVANCE` entries; both caught by the same integration test |
 
-**Total time lost to incidents:** 7.15h
+**Total time lost to incidents:** 7.45h
 **Most valuable lesson:** the two costliest bugs (INC-010, INC-013) each looked like a modeling or tuning problem at first glance and were actually a data-plumbing bug — checking `model.classes_` and computing an oracle AUC (using the generator's own true probability as the score) settled both in minutes once the right question was asked, versus much longer spent tuning hyperparameters that were never the problem.
 **The bug that would have shipped if it hadn't been caught:** INC-009 — an uncalibrated propensity number reaching `case.scored`, which the EV engine (Phase 05) would have consumed as if it were a real probability. Nothing would have crashed; the number would just have been quietly wrong, exactly the failure mode CLAUDE.md's calibration rule exists to prevent.
 
