@@ -28,6 +28,28 @@ Add an entry the moment something costs you more than 15 minutes. Write it befor
 
 ## Entries
 
+### INC-022 · The dashboard's batch summary took 21 seconds — a live full-log audit-chain verification on every page load
+
+- **When:** Day 7, phase 11
+- **Symptom:** `curl http://localhost:8000/dashboard/summary` took 21.2s; `/dashboard/queue` took 16.7s. Both returned correct data — nothing was broken, it was just unusable for a page that's supposed to load instantly.
+- **Blast radius:** none shipped wrong; caught by timing the live server directly (`time curl ...`) right after getting the dashboard rendering in the browser, before committing.
+- **First wrong hypothesis:** none needed this time — both endpoints' own code made the cost obvious on inspection once timed: `batch_summary` called `verify_chain`/`verify_replay_equality` (a full scan of every event ever written to this dev database, across this entire session's accumulated testing) on every request; `work_queue` fetched events for *every* pending treatment case in the whole database before ranking and truncating to the requested `limit`.
+- **Root cause:** two different instances of the same mistake — doing unbounded work proportional to the database's entire history instead of work proportional to what the page actually needs. The audit-chain claim in §9's headline block was always meant to describe *that batch*, verified once when `make demo` produced it (and already stored in the report JSON) — not a live, continuously-re-verified global claim. `work_queue`'s `limit` bounded what came *back*, not what got *processed*.
+- **Fix:** `batch_summary` reads `audit_chain_verified`/`replay_equality_passed` straight from the stored batch report instead of re-verifying live. `work_queue` gained a separate `candidate_pool` parameter (default 300) that bounds how many of the most-recently-created pending cases get their events fetched at all, before ranking — distinct from `limit` (how many make the final list), so ranking semantics for a normal-sized batch don't change. `/dashboard/summary`: 21.2s → 0.375s. `/dashboard/queue`: 16.7s → 1.1s.
+- **Prevention:** none added beyond the fix itself (no regression test written for a *specific* latency number, since that would be measuring this dev machine's hardware, not a real invariant) — the general lesson (bound work by page size, not database size) has no test that a future page can't still fail to apply.
+- **Time lost:** 0.3h
+
+### INC-021 · The dashboard's queue/compliance panels were silently empty — filtering by the wrong "merchant_id"
+
+- **When:** Day 7, phase 11
+- **Symptom:** hitting the live dashboard API directly, `/dashboard/queue` and `/dashboard/compliance` returned `[]` / all-zero, while `/dashboard/summary`'s `cases_by_state` (215 pending) and `/dashboard/models` were clearly returning real data. All the automated tests for these same endpoints were green.
+- **Blast radius:** none shipped wrong — caught by manually hitting the running server with `curl`, which the test suite's own fixtures never would have caught (see below).
+- **First wrong hypothesis:** none needed — the mismatch was visible immediately from comparing the two merchant_id values in the running data.
+- **Root cause:** the dashboard filtered every read by `policy.merchant.merchant_id` — the string `"demo"`, which is just `policies/merchant/demo.yaml`'s own label for *which policy file to load*. Real cases carry a completely different `merchant_id`: the business-profile label from the synthetic generator (`demo-d2c`, `demo-subscription`, `demo-b2b`). The two were never the same string, so the filter silently matched nothing for any case that came from a real batch run. Every integration test for these endpoints happened to seed its own fixture cases with a merchant_id chosen to match the *test's* hardcoded expectation, not with real generator data — so the mismatch was invisible to the whole test suite by construction.
+- **Fix:** dashboard reads no longer filter by merchant_id at all. This is a single-tenant build — one policy governs every case regardless of which business-profile label it carries — so a merchant_id filter was never actually meaningful here.
+- **Prevention:** none added as a test (there is nothing to assert once the filter is simply removed); the actual prevention is procedural — this is the second phase in a row (see the dashboard's own live smoke test in this phase) where hitting the real running server caught something the test suite's internally-consistent fixtures could not, which is worth treating as a standing habit before calling a phase's backend done, not just a one-off check.
+- **Time lost:** 0.2h
+
 ### INC-020 · `make demo` took 10+ minutes for 500 cases — a fresh `shap.TreeExplainer` rebuilt on every single classification
 
 - **When:** Day 7, phase 10
@@ -306,8 +328,10 @@ Add an entry the moment something costs you more than 15 minutes. Write it befor
 | 018 | 07 | `fold()` never projected `root_cause`/`resolution_state` past `case.created`, so recovery pages would have silently shown the generic fallback | 0.3h | added the three missing `fold()` branches (case.classified, case.abandoned_uneconomic, payment.recovered); reset the dev DB for a clean replay slate, same as INC-003 |
 | 019 | 08 | A calm opt-out phrase ("stop calling me") matched the hostility guard, forcing a safe-exit instead of a clean opt-out; `opt_out`/`human_transfer` also had no scripted advance to `close` | 0.3h | removed the false-positive keyword; added the missing `_SCRIPTED_ADVANCE` entries; both caught by the same integration test |
 | 020 | 10 | `make demo` took 10m25s for 500 cases — `classify()` rebuilt a `shap.TreeExplainer` (parses the whole tree ensemble) on every call instead of once | 1.1h | `@lru_cache`d the explainer and three uncached `metrics.json` reads, matching `artifacts.py`'s own pattern; 500-case runtime dropped to 55.7s (11x) |
+| 021 | 11 | Dashboard queue/compliance panels were silently empty — filtered by `policy.merchant.merchant_id` ("demo"), which never matches a real case's own business-profile merchant_id | 0.2h | removed the merchant_id filter entirely (single-tenant build, one policy over several business-profile labels); caught by curling the live server, not by the test suite's own internally-consistent fixtures |
+| 022 | 11 | Dashboard batch summary took 21s — live full-log `verify_chain`/`verify_replay_equality` on every request, plus an unbounded work-queue candidate scan | 0.3h | read audit-chain status from the stored batch report instead of re-verifying live; added a separate `candidate_pool` bound distinct from the response `limit`; 21.2s→0.375s and 16.7s→1.1s |
 
-**Total time lost to incidents:** 8.55h
+**Total time lost to incidents:** 9.05h
 **Most valuable lesson:** the two costliest bugs (INC-010, INC-013) each looked like a modeling or tuning problem at first glance and were actually a data-plumbing bug — checking `model.classes_` and computing an oracle AUC (using the generator's own true probability as the score) settled both in minutes once the right question was asked, versus much longer spent tuning hyperparameters that were never the problem.
 **The bug that would have shipped if it hadn't been caught:** INC-009 — an uncalibrated propensity number reaching `case.scored`, which the EV engine (Phase 05) would have consumed as if it were a real probability. Nothing would have crashed; the number would just have been quietly wrong, exactly the failure mode CLAUDE.md's calibration rule exists to prevent.
 
