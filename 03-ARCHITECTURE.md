@@ -379,7 +379,7 @@ Full ADRs live in `adr/`. Summary:
 | 0005 | Grounded retrieval | Postgres FTS over events first | pgvector/embeddings | Log entries are short and structured; lexical + structured filters outperform embeddings at this scale and are auditable |
 | 0006 | Channels | Simulator-first behind a port | Live providers as the default path | Determinism, zero cost, demo safety; live adapters are a flag, never a dependency |
 | 0007 | Uplift estimation | X-learner over two LightGBM models | Causal forest | Simpler, faster to train, adequate at this data scale; honest about the limitation |
-| 0008 | Frontend | Next.js + shadcn/ui + Recharts | Streamlit | The dashboard is the judge's only direct experience of the product; it has to look like software, not a notebook |
+| 0008 | Frontend | Next.js + Tailwind (hand-rolled components, see ADR-0008's update) | Streamlit | The dashboard is the judge's only direct experience of the product; it has to look like software, not a notebook |
 
 ---
 

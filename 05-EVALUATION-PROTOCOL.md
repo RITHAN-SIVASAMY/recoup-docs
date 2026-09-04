@@ -28,7 +28,7 @@ Two commitments, made in advance:
 | Unit of randomization | The `Case`, assigned at creation, immutable |
 | Assignment | Seeded hash of `case_id` + salt, stratified by (root cause × amount band × segment) |
 | Holdout rate | 20% at batch start, adaptive thereafter (§6) |
-| Batch size | ≥500 cases (bar: 50) |
+| Batch size | 2,000 cases canonical (raised from the original ≥500 bar once 500 proved honestly under-powered for this data's effect size — see `docs/09-INCIDENT-LOG.md` INC-023; floor bar: 50) |
 | Significance test | Two-proportion z-test on resolution rate |
 | Alpha | 0.05, two-sided |
 | Interval | 95% CI on the absolute lift |
@@ -155,28 +155,33 @@ Two runs from the same seed must produce byte-identical headline numbers. This i
 
 ## 9. The headline block
 
-Every run prints exactly this, and it is what appears in the README and on screen in the video:
+Every run prints exactly this, and it is what appears in the README and on screen in the
+video. This is not an illustration — it's `make demo`'s real, current, current-seed output,
+copied from `data/reports/b_seed42_2000.json` rather than typed:
 
 ```
 ════════════════════════════════════════════════════════════════
-RECOUP · BATCH b_2026_09_01 · seed 42 · 500 cases
+RECOUP · BATCH b_seed42_2000 · seed 42 · 2000 cases
 ────────────────────────────────────────────────────────────────
-At risk                        ₹ 12,48,300
-Raw recovered (treated)        ₹  3,91,200   ← overstates our impact
-Incremental recovered          ₹  2,17,450   (95% CI ₹1,48,900 – ₹2,86,000)
-Lift                           14.8 pp       z = 3.41, p = 0.0006
-                               n_t = 400  n_c = 100  MDE = 8.9 pp
-CUPED-adjusted                 ₹  2,24,100   (unadjusted shown above)
+At risk                        ₹ 17,36,12,264
+Raw recovered (treated)        ₹  4,92,11,755   ← overstates our impact
+Incremental recovered          ₹    -51,79,409  (95% CI ₹-1,29,40,473 – ₹25,81,655)
+Lift                           -4.3 pp       z = -1.31, p = 0.1909  *** NOT SIGNIFICANT ***
+                               n_t = 1736  n_c = 264  MDE = 9.2 pp
+CUPED-adjusted                 ₹  11,59,633   (unadjusted shown above)
 ────────────────────────────────────────────────────────────────
-Spend on contact               ₹      1,842
-Cost per ₹ recovered           ₹     0.0085
-₹ saved by not contacting      ₹     42,600  (sure things + sleeping dogs + EV floor)
+Spend on contact               ₹        268
+Cost per ₹ recovered           undefined (no incremental recovery)
+₹ saved by not contacting      ₹         57  (sure things + sleeping dogs + EV floor)
 ────────────────────────────────────────────────────────────────
-Actions blocked by policy      37   (quiet hours 14 · opt-out 9 · mandate 11 · cap 3)
-Contacts per recovered case    1.8 median   ·  max touches respected: 100%
-Cases in exception queue       6    (all triaged, none lost)
+Actions blocked by policy      388  (quiet hours 267 · mandate 121)
+Contacts per recovered case    1.0 median   ·  max touches respected: 100%
+Cases in exception queue       0    (all triaged, none lost)
 Audit chain                    VERIFIED · replay equality PASS
 ════════════════════════════════════════════════════════════════
 ```
+
+This batch is a **null result** — see the README's "The proof" section for why that's the
+honest headline to lead with, not a number to be embarrassed by.
 
 Illustrative values. The real ones come from `make demo`, whatever they turn out to be.

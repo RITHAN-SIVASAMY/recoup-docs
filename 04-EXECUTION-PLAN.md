@@ -117,10 +117,10 @@ Chosen for three properties: **demonstrably serious**, **fast to build solo**, a
 | Concern | Choice | Why |
 |---|---|---|
 | Framework | **Next.js 16** (App Router) + **TypeScript** | One app serves both the merchant dashboard and the public recovery microsite; deploys free on Vercel. Built against 15 in Phase 07, upgraded to 16 immediately after to close a high-severity transitive `postcss` vulnerability (`npm audit`) — no App Router code changes were needed |
-| UI kit | **Tailwind CSS** + **shadcn/ui** + **lucide** icons | Looks like a real product in hours, not days |
-| Charts | **Recharts** (+ a hand-built Qini/calibration chart) | Enough for lift, funnel, calibration and Qini without fighting a viz library |
-| Data | **TanStack Query** + **EventSource (SSE)** | Live case stream during the demo is a genuine "this is running" moment |
-| Motion | **Framer Motion**, used sparingly | Polish, not decoration |
+| UI kit | **Tailwind CSS**, hand-rolled components (`web/components/ui.tsx`), inline SVG icons | Planned shadcn/ui + lucide originally; dropped once the dashboard's own design system (ops-console sidebar, semantic tone colors) got specific enough that a component library was fighting it more than saving time — see ADR-0008's update |
+| Charts | Hand-built (proportional case-resolution funnel, diverging lift-by-segment bars) + matplotlib-rendered PNGs for model curves (confusion matrix, ROC, Qini), served from `ml/artifacts/` | No viz library dependency; charts are simple enough to draw directly and the ML curves are already static images from `make train` |
+| Data | Plain `fetch` + **EventSource (SSE)** | Live case stream during the demo is a genuine "this is running" moment; TanStack Query wasn't worth the dependency at this surface size |
+| Motion | CSS transitions + a small `useCountUp` hook for the headline figures | Polish, not decoration; Framer Motion wasn't needed for what shipped |
 | Recovery page | Same Next.js app, public route, mobile-first | The judge opens it on their phone |
 
 ### 3.6 Platform, quality and delivery
