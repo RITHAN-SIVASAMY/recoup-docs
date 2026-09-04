@@ -25,7 +25,7 @@ The bar: *"Don't just identify the problem. Show measured money recovered across
 | Phrase | Where a judge sees it satisfied | Status |
 |---|---|---|
 | **measured** money recovered | Incremental ₹ with 95% CI, z-test and MDE, raw number shown beside it | ☐ |
-| across a **batch** | 500 seeded cases, reproducible with `make demo` | ☐ |
+| across a **batch** | 2,000 seeded cases, reproducible with `make demo` (raised from 500 — INC-023: 500 was honestly under-powered for this data's effect size) | ☐ |
 | **compliant** escalation | Compliance view: blocked actions with rule IDs; `06-COMPLIANCE-MATRIX.md` | ☐ |
 | **stopping rules** | Policy-as-code + Hypothesis invariant tests; ≥3 blocks demonstrated live | ☐ |
 | **audit trail** | Hash-chained event log, deterministic replay, grounded Q&A with citations and refusal | ☐ |

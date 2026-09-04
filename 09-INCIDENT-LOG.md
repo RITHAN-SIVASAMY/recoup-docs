@@ -330,16 +330,75 @@ Add an entry the moment something costs you more than 15 minutes. Write it befor
 | 020 | 10 | `make demo` took 10m25s for 500 cases — `classify()` rebuilt a `shap.TreeExplainer` (parses the whole tree ensemble) on every call instead of once | 1.1h | `@lru_cache`d the explainer and three uncached `metrics.json` reads, matching `artifacts.py`'s own pattern; 500-case runtime dropped to 55.7s (11x) |
 | 021 | 11 | Dashboard queue/compliance panels were silently empty — filtered by `policy.merchant.merchant_id` ("demo"), which never matches a real case's own business-profile merchant_id | 0.2h | removed the merchant_id filter entirely (single-tenant build, one policy over several business-profile labels); caught by curling the live server, not by the test suite's own internally-consistent fixtures |
 | 022 | 11 | Dashboard batch summary took 21s — live full-log `verify_chain`/`verify_replay_equality` on every request, plus an unbounded work-queue candidate scan | 0.3h | read audit-chain status from the stored batch report instead of re-verifying live; added a separate `candidate_pool` bound distinct from the response `limit`; 21.2s→0.375s and 16.7s→1.1s |
+| 023 | 12 | The canonical `make demo` (seed 42, 500 cases) came back negative and not significant two days before submission; `07-DEMO-SCRIPT.md`'s quoted headline number had never actually been validated against the real pipeline. First suspected as pure under-powering (500 cases → MDE ≈ 18pp) and "fixed" by raising the default to 2,000 cases (`Makefile` `CASES` variable) — but re-running the *same* seed at the *same* case count kept producing *different* results, which under-powering alone cannot explain (see INC-025) | 0.4h | raising batch size to 2,000 cases (MDE ≈ 9pp) is still the right call on its own merits and stayed as the new default, but it was not, by itself, the actual fix — see INC-025 |
+| 024 | 12 | `make demo`'s headline block (₹ and box-drawing characters) crashed with `UnicodeEncodeError` on a stock Windows console — the default `cp1252` codepage can't encode them, so a judge on Windows running the documented quickstart would hit a crash instead of the headline numbers | 0.15h | `cli.py` reconfigures `sys.stdout`/`sys.stderr` to UTF-8 on `win32` before printing anything |
+| 025 | 12 | The real bug behind INC-023: `domain/ids.py::new_ulid()` mints every case ID from real wall-clock time + OS entropy, with no way to seed it — including case IDs minted during the "seeded" synthetic demo batch. Every downstream per-case random draw (ladder-walk RNG, ground-truth resolution, simulator delivery outcome) is correctly keyed on `f"{seed}:{case_id}:..."`, but `case_id` itself was never actually deterministic, so re-running the identical seed silently produced a different cohort assignment and a different result each time — a violation of CLAUDE.md rule 4 ("seeded randomness everywhere") hiding in plain sight, confirmed by diffing two from-empty-database runs of `make demo --seed 42` and finding `n_treated` at 239 in one and 435 in the other | 1.4h | added `domain/ids.py::deterministic_ulid(key)` (SHA-256 of `key`, masked into a valid ULID) for the seeded-batch path only — `new_ulid()` itself is untouched and real ingestion still gets genuinely unpredictable IDs; `ingestion/ingest.py::ingest()` grew an optional `case_id_override` param; `demo.py` passes `deterministic_ulid(f"case:{seed}:{intake.provider_event_id}")`. Verified by diffing two fully-fresh (`docker volume rm` on **both** Postgres and Redis — the first re-verification attempt only reset Postgres and still showed drift from stale Redis-cached idempotency keys) runs of the same seed until the reports matched on every cohort-level field. Two clean post-fix runs (seed 42 and seed 7, both n=2,000) then came back honestly null, which is why the README's headline is a null result, not a manufactured win — see the standing reflection below |
 
-**Total time lost to incidents:** 9.05h
+**Known, documented, not eliminated (out of scope for this deadline):** channel
+selection is a live Thompson-sampling bandit (`execution/bandit.py`) whose
+posteriors are read from and written to Redis *while* ~2,000 cases process
+concurrently under `demo.py`'s bounded `asyncio.gather`. Each case's own draw
+is correctly seeded, but the posterior values it draws *against* depend on how
+many sibling cases' updates have already landed in Redis — a function of real
+async I/O timing, not of the seed. Confirmed as the residual cause of ~1-3pp
+of run-to-run drift per breakdown segment even after INC-025's fix (two
+fully-fresh runs of the same seed now match on cohort assignment, exclusion
+counts and policy-block counts exactly, but not on the exact ₹ figure). A real
+fix means either running the batch fully sequentially (losing the ~10x
+concurrency speedup from INC-020) or freezing bandit posteriors for a batch's
+duration — both are real changes deferred past the deadline, not silently
+ignored.
+
+**Total time lost to incidents:** 11.0h
 **Most valuable lesson:** the two costliest bugs (INC-010, INC-013) each looked like a modeling or tuning problem at first glance and were actually a data-plumbing bug — checking `model.classes_` and computing an oracle AUC (using the generator's own true probability as the score) settled both in minutes once the right question was asked, versus much longer spent tuning hyperparameters that were never the problem.
-**The bug that would have shipped if it hadn't been caught:** INC-009 — an uncalibrated propensity number reaching `case.scored`, which the EV engine (Phase 05) would have consumed as if it were a real probability. Nothing would have crashed; the number would just have been quietly wrong, exactly the failure mode CLAUDE.md's calibration rule exists to prevent.
+**The bug that would have shipped if it hadn't been caught:** INC-025 — every "significant" headline number produced before this fix (including the one that nearly went into the README and the demo-script voice-over) was the output of a genuinely non-deterministic pipeline masquerading as a seeded one. It would have shipped as the submission's central claim, and a judge who ran `make demo` a second time — exactly what the README invites them to do — would have gotten a different, possibly null, number and reasonably concluded the project's central "measured, not fabricated" claim didn't hold up. Runner-up: INC-009, an uncalibrated propensity number reaching `case.scored`, which the EV engine would have consumed as if it were a real probability without ever crashing.
 
 ---
 
 ## Standing reflection prompts (answer these on Day 8)
 
-1. Which failure would have been invisible without the audit log?
-2. Which invariant test caught something a manual test would have missed?
-3. Where did an AI coding agent confidently produce something subtly wrong, and how did the specification catch it?
-4. What did you deliberately choose *not* to fix, and why was that the right call under the deadline?
+1. **Which failure would have been invisible without the audit log?** INC-018:
+   `fold()` never projected `root_cause`/`resolution_state` past `case.created`,
+   so the recovery page would have silently rendered its generic fallback for
+   every classified case — no error, no crash, just a wrong-but-plausible
+   screen. It only surfaced because the event-sourced projection could be
+   replayed and diffed against what the case *should* have shown; a system
+   that mutated a `cases` row directly would have had nothing to replay
+   against, and the bug would have shipped invisibly.
+2. **Which invariant test caught something a manual test would have
+   missed?** INC-007: dedupe's reservation step could outrun the
+   `case.created` event it pointed to — a genuine race, present only under
+   concurrent load, that a single manual click-through would never trigger.
+   The chaos suite's concurrent-delivery scenario hit it reliably because it
+   *is* the concurrent case, not an approximation of one.
+3. **Where did an AI coding agent confidently produce something subtly
+   wrong, and how did the specification catch it?** INC-025 is the clearest
+   instance in the whole build. `domain/ids.py::new_ulid()` was written once,
+   early, for real ingestion, where "unpredictable and time-sortable" is
+   exactly correct — and then reused without a second thought inside the
+   seeded demo/simulation path many phases later, where it silently broke the
+   one guarantee (CLAUDE.md rule 4, "seeded randomness everywhere") the whole
+   measurement story depends on. Every test passed. `mypy --strict` passed.
+   The code *looked* deterministic — `random.Random(f"{seed}:{case_id}:...")`
+   is right there, seeded, in plain sight — while the value it was keyed on
+   quietly wasn't. It surfaced only by refusing to trust a single "looks
+   good" run: diffing two from-empty-database runs of the identical command
+   line was the only thing that could have caught it, and it took an explicit
+   "verify reproducibility on a clean machine" step from `phase-12`'s own
+   definition of done to force that comparison to happen at all. The same
+   over-trusting pattern showed up one layer up, in prose: `07-DEMO-SCRIPT.md`
+   quoted a specific headline number that had apparently been drafted before
+   the measurement pipeline existed and never reconciled against real output
+   (folded into INC-023) — precision was mistaken for validation twice in the
+   same week, once in code and once in a sentence.
+4. **What did you deliberately choose *not* to fix, and why was that the
+   right call under the deadline?** Live cloud deployment (Railway/Fly +
+   Vercel + Neon + Upstash) was cut on the final day in favor of hardening the
+   local `make demo` path, the README's real numbers, and this incident log.
+   Standing up four unfamiliar managed services for the first time hours
+   before a deadline is a bigger failure surface than the gap it closes — a
+   half-configured deployment that breaks during judging is worse than an
+   honestly-labeled "runs locally" repo with a verified, reproducible
+   quickstart. Given the choice between *more surface area* and *the surface
+   area we have actually working end to end*, the deadline was the deciding
+   vote.

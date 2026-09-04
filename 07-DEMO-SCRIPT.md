@@ -35,13 +35,13 @@
 
 ---
 
-### 0:25–1:00 · The wrong number *(the hook — do not shorten this)*
+### 0:25–1:00 · The number that isn't there *(the hook — do not shorten this)*
 
-> *"Most recovery tools would show you this: ₹3.9 lakh recovered. That number is wrong — not fabricated, just wrong, because some of those customers would have paid anyway. So Recoup holds back a randomized control group and reports the difference. ₹2.17 lakh, with a 95% confidence interval and a p-value. That's the money we actually caused."*
+> *"Most recovery tools would show you this: nearly five crore rupees recovered. That number isn't fabricated — it's just wrong, because some of those customers would have paid anyway. So Recoup holds back a randomized control group and reports the difference instead. Watch what that actually does to the number: on this batch, it doesn't clear statistical significance. So Recoup says that. On camera. Instead of a bigger number, you get a true one — even when the true one is 'we can't prove this yet.'"*
 
-**On screen:** the two numbers side by side; hover shows the z-test, CI, MDE, n_t/n_c; then the holdout schedule showing the control group shrinking as evidence accumulates.
+**On screen:** the two numbers side by side, the raw one large and the incremental one small and honestly bounded; hover shows the z-test, CI, MDE, n_t/n_c, the "NOT SIGNIFICANT" marker in the same red typography a real failed test gets — nothing softened for the camera.
 
-> *"And because a permanent control group is a permanent tax on the merchant, the holdout shrinks automatically once the effect is established."*
+> *"That refusal is the whole pitch. A tool that always finds a win isn't measuring anything — it's decorating. Every number on this dashboard, good or null, comes from the same undecorated pipeline."*
 
 ---
 
@@ -119,7 +119,9 @@
 
 ### 4:35–5:00 · The number and the ask
 
-> *"Five hundred cases, seed forty-two, reproducible with one command on a clean machine. ₹2.17 lakh incremental, ninety-five percent confidence, at a cost of eight-tenths of a paisa per rupee recovered — and ₹42,600 saved by the contacts it chose not to make."*
+> *"Two thousand cases, seed forty-two, reproducible with one command on a clean machine. On this run, the honest answer is: not statistically significant — the confidence interval still crosses zero. We're showing you that, not a nicer number from a different run. The method is what we're asking you to trust, and the method just proved itself by refusing to lie to you thirty seconds ago."*
+
+(Verified against a real `make demo` run — see the README's headline block. Re-check this line against your own machine's output before recording: `make demo` prints the exact figures live, and this script should never quote a number that hasn't actually been produced by the code. If your own run comes back significant, say the real number instead — the point is fidelity to whatever the pipeline actually printed, not this specific outcome.)
 
 **On screen:** the headline block, then the repo, then this line, held for three seconds:
 
